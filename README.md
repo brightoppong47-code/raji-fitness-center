@@ -51,8 +51,16 @@ The Firebase modular web SDK is pinned to 12.0.0 and loaded from Google’s offi
 
 ## Limits
 
-JSON restores are limited to 20 MB. Client photos are limited to 250 KB. This is an online app: writes require a working connection. JSON exports cover app records, not Firebase Authentication passwords or provider configuration. High Contrast intentionally hides the page watermark. Theme/visibility choices are device preferences.
+JSON restores are limited to 20 MB. Client photos are limited to 250 KB. After opening and signing in online once on a device, the app can load cached records offline. Registrations, renewals, walk-ins and attendance are stored in an account-scoped IndexedDB outbox and synchronized while the app is open after reconnecting. Pending entries are excluded from confirmed totals. Device-recorded times are retained; the server separately records when entries sync. Entries older than seven days, fee conflicts and changes caused by a database restore require review. Sign-out clears cached records and is blocked until pending entries are synced or exported and removed. Initial setup, staff access, fee settings, backups and restores require internet. JSON exports cover app records, not Firebase Authentication passwords or provider configuration. High Contrast intentionally hides the page watermark. Theme/visibility choices are device preferences.
 
 ## Validation
 
 The actual Firebase adapter was exercised against the Firestore emulator with the supplied security rules. Tests cover owner setup, secretary workflows, unauthorized access, direct fee/role/payment tampering, backup validation, restore and recovery. The test harness is in `tests/firestore.mjs`. It requires Firebase SDK 12.0.0, rules-unit-testing 5.0.0 and a compatible Firebase CLI/Java installation; `RAJI_TEST_DEPS` can point to an external test package.json. `emulator.test.json` uses only the demo project, never production.
+
+## Offline update setup
+
+Republish the updated `firestore.rules` before deploying the offline update. Existing online clients remain compatible. The new rules accept captured event timestamps within a seven-day window, preserve server commit timestamps, and still protect secretary fees/roles/history.
+
+The service worker precaches the built app, gym imagery and the three pinned Firebase SDK modules. It never caches Firestore/API requests. Keep the first online session open until Settings → Offline & sync says files are ready. Browsers may evict local storage; download regular JSON backups while online. Synchronization runs while the app is open, using Web Locks where available to coordinate multiple tabs. The same queued operation ID is checked transactionally so retries cannot create a second payment.
+
+Tests: `npm run build && node tests/shell.mjs` validates the offline shell. The emulator integration suite also tests durable outbox storage using `fake-indexeddb@6`, delayed event dates, idempotency, fee conflicts, seven-day limits and reconnect sync.
