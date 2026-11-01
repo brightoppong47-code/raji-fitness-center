@@ -41,8 +41,8 @@ export default function Gym(){
  async function act(payload:any){if(busy)return;setBusy(true);try{const result:any=payload.action==='staff'&&!payload.uid?await createStaffLogin(payload):await api(payload);setModal(null);setPhoto('');if(!result.pending)await load();await refreshPending();setToast(result.staffCreated?'Staff login is ready. They can sign in with their email and password.':result.pending?'Saved on this device — pending sync.':'Saved successfully');}catch(e:any){setToast(e.message)}finally{setBusy(false)}}
  function open(kind:string,member?:any){setStaffAccountMode('new');setPhoto('');setModal({kind,member})}
  const cfg=data?.settings?.[0]||{registration:400,monthly:150,walkin:10};const members:any[]=data?.members||[],payments:any[]=data?.payments||[],visits:any[]=data?.attendance||[];const admin=data?.me?.role==='admin';
- const allowedNav=admin?nav:nav.filter(([name])=>['Clients','Payments','Attendance'].includes(name));
- const page=allowedNav.some(([name])=>name===requestedPage)?requestedPage:(admin?'Overview':'Clients');
+ const allowedNav=admin?nav:nav.filter(([name])=>['Overview','Clients','Payments','Attendance'].includes(name));
+ const page=allowedNav.some(([name])=>name===requestedPage)?requestedPage:'Overview';
  const inside=visits.filter(a=>!a.exited);const todays=payments.filter(p=>p.created.slice(0,10)===today());const current=payments.filter(p=>p.created.slice(0,7)===today().slice(0,7));const sum=(p:any[])=>p.reduce((s,p)=>s+p.amount,0);
  const filtered=members.filter(m=>(m.name+' '+m.phone+' '+m.id).toLowerCase().includes(search.toLowerCase())&&(filter==='All'||status(m.expires)===filter));
  const reportPayments=payments.filter(p=>p.created.slice(0,10)>=from&&p.created.slice(0,10)<=to);const reportVisits=visits.filter(p=>p.entered.slice(0,10)>=from&&p.entered.slice(0,10)<=to);
