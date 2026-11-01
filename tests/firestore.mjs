@@ -40,6 +40,20 @@ try{
  const baseData=await secretary.getData();Object.defineProperty(globalThis,'navigator',{value:{onLine:false},configurable:true});
  const queued=await secretary.api({action:'walkin',name:'Queued offline visitor',method:'Cash'});assert.equal(queued.pending,true);assert.equal((await secretary.queueEntries('secretary')).length,1);assert.equal((await secretary.getData()).offline,true);await assert.rejects(secretary.api({action:'settings',registration:1,monthly:1,walkin:1}));
  globalThis.navigator.onLine=true;await secretary.syncPending();assert.equal((await secretary.queueEntries('secretary')).length,0);data=await admin.getData();assert.equal(data.payments.filter(p=>p.name==='Queued offline visitor').length,1);await secretary.syncPending();assert.equal((await admin.getData()).payments.filter(p=>p.name==='Queued offline visitor').length,1);
+
+ async function correct(table,target,values={}){const latest=await admin.getData();return admin.api({action:'correct',table,target,revision:latest.revision,dataset:latest.datasetId,reason:'Test correction',...values});}
+ const fixMember=(await admin.getData()).members.find(r=>r.id===op);
+ await assert.rejects(secretary.api({action:'correct',table:'members',target:op,remove:true,reason:'Denied'}),/Admin only/);
+ await correct('members',op,{name:'Corrected Client',phone:fixMember.phone,expires:fixMember.expires,notes:'Corrected'});assert.equal((await admin.getData()).members.find(r=>r.id===op).name,'Corrected Client');
+ const fixPayment=(await admin.getData()).payments.find(r=>r.member===op);await correct('payments',fixPayment.id,{name:fixPayment.name,amount:350,method:'Mobile Money',created:fixPayment.created});assert.equal((await admin.getData()).payments.find(r=>r.id===fixPayment.id).amount,350);
+ const stale=await admin.getData();await secretary.api({action:'walkin',name:'Concurrent visitor',method:'Cash'});await secretary.syncPending();await assert.rejects(admin.api({action:'correct',table:'payments',target:fixPayment.id,revision:stale.revision,dataset:stale.datasetId,remove:true,reason:'Stale'}),/Records changed/);
+ await assert.rejects(correct('payments',fixPayment.id,{amount:-1,method:'Cash',created:fixPayment.created}));
+ await correct('attendance','offline-in',{entered:recorded,exited:''});assert.equal((await admin.getData()).members.find(r=>r.id===op).openVisitId,'offline-in');
+ await correct('attendance','offline-in',{remove:true});assert.equal((await admin.getData()).members.find(r=>r.id===op).openVisitId,null);
+ const walk=(await admin.getData()).payments.find(r=>r.name==='Concurrent visitor');await correct('payments',walk.id,{remove:true});data=await admin.getData();assert.ok(!data.payments.some(r=>r.id===walk.id));assert.ok(!data.attendance.some(r=>r.id===walk.visitId));
+ await correct('members',op,{remove:true});data=await admin.getData();assert.ok(!data.members.some(r=>r.id===op));assert.ok(!data.payments.some(r=>r.member===op));assert.ok(!data.attendance.some(r=>r.member===op));assert.ok(data.audit.some(r=>r.action.includes('Deleted members')&&r.reason==='Test correction'));
+ const walk2=data.attendance.find(r=>r.type==='Walk-in');const linkedPayment=walk2.paymentId;await correct('attendance',walk2.id,{remove:true});assert.ok(!(await admin.getData()).payments.some(r=>r.id===linkedPayment));
+ console.log('PASS: admin correction, secretary denial, validation, stale revision rejection, attendance status repair, linked walk-in deletion, client cascade and audit trail.');
  console.log('PASS: offline recorded times, 30-day periods, idempotent retry, fee conflict, old-entry rejection, delayed attendance, durable queue and reconnect sync.');
  console.log('PASS: Firebase adapter and rules: setup, staff access, registration, renewal, walk-ins, attendance, duplicate prevention, anonymous/unknown denial, fee/role/payment tamper denial, backup/restore and recovery.');
-}catch(e){console.error('TEST FAILURE:',e.message);process.exitCode=1}finally{await env.cleanup()}
+}catch(e){console.error('TEST FAILURE:',e.message,(e.stack||'').split('\n').filter(l=>l.includes('tests/firestore.mjs')).join('\n'));process.exitCode=1}finally{await env.cleanup()}
