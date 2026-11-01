@@ -1,0 +1,56 @@
+rules_version = '2';
+service cloud.firestore {
+ match /databases/{database}/documents {
+  function signed(){return request.auth!=null;}
+  function owner(){return signed() && request.auth.uid=='n4f2LxOy8zd49tss1RUnu7hRfLs1';}
+  function user(){return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;}
+  function admin(){return owner() || (signed() && user().active==true && user().role=='admin');}
+  function staff(){return owner() || (signed() && user().active==true && user().role in ['admin','secretary']);}
+  function current(g){return get(/databases/$(database)/documents/system/state).data.active==g;}
+  function cfg(g){return get(/databases/$(database)/documents/datasets/$(g)/settings/1).data;}
+  function member(g,id){return get(/databases/$(database)/documents/datasets/$(g)/members/$(id)).data;}
+  function memberAfter(g,id){return getAfter(/databases/$(database)/documents/datasets/$(g)/members/$(id)).data;}
+  function paymentAfter(g,id){return getAfter(/databases/$(database)/documents/datasets/$(g)/payments/$(id)).data;}
+  function visitAfter(g,id){return getAfter(/databases/$(database)/documents/datasets/$(g)/attendance/$(id)).data;}
+  function author(d){return d.createdBy==request.auth.uid && d.recordedAt==request.time;}
+  function period(end,start){return end>=start+duration.value(30,'d')-duration.value(2,'m') && end<=start+duration.value(30,'d')+duration.value(2,'m');}
+  match /users/{uid}{
+   allow get: if signed() && (request.auth.uid==uid || admin());
+   allow list: if admin();
+   allow create,update: if admin() && request.resource.data.role in ['admin','secretary'] && request.resource.data.active is bool && request.resource.data.name is string && request.resource.data.email is string && (uid!='n4f2LxOy8zd49tss1RUnu7hRfLs1' || request.resource.data.role=='admin');
+   allow delete: if admin() && uid!='n4f2LxOy8zd49tss1RUnu7hRfLs1' && uid!=request.auth.uid;
+  }
+  match /system/state {
+   allow read: if staff();allow create,delete: if admin();
+   allow update: if admin() || (staff() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['revision']) && request.resource.data.revision==resource.data.revision+1);
+  }
+  match /datasets/{g}/settings/{id}{allow read:if admin() || (staff() && current(g));allow write:if admin();}
+  match /datasets/{g}/audit/{id}{allow read:if admin();allow create:if admin() || (staff() && current(g) && author(request.resource.data) && request.resource.data.action is string && request.resource.data.action.size()<=2000);allow update,delete:if admin();}
+  match /datasets/{g}/members/{id}{
+   allow read:if admin() || (staff() && current(g));
+   allow create:if admin() || (staff() && current(g) && request.resource.data.id==id && author(request.resource.data) && request.resource.data.name is string && request.resource.data.phone is string && request.resource.data.photo.size()<=350000 && request.resource.data.openVisitId==null && period(request.resource.data.expiresAt,request.time) && paymentAfter(g,request.resource.data.lastPaymentId).kind=='Registration' && paymentAfter(g,request.resource.data.lastPaymentId).member==id && paymentAfter(g,request.resource.data.lastPaymentId).recordedAt==request.time);
+   allow update:if admin() || (staff() && current(g) && (
+    (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['expires','expiresAt','lastPaymentId']) && request.resource.data.lastPaymentId!=resource.data.lastPaymentId && period(request.resource.data.expiresAt,resource.data.expiresAt>request.time?resource.data.expiresAt:request.time) && paymentAfter(g,request.resource.data.lastPaymentId).kind=='Renewal' && paymentAfter(g,request.resource.data.lastPaymentId).member==id && paymentAfter(g,request.resource.data.lastPaymentId).recordedAt==request.time) ||
+    (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['openVisitId']) && (
+     (resource.data.openVisitId==null && request.resource.data.openVisitId is string && resource.data.expiresAt>request.time && visitAfter(g,request.resource.data.openVisitId).member==id && visitAfter(g,request.resource.data.openVisitId).enteredAt==request.time && visitAfter(g,request.resource.data.openVisitId).exitedAt==null) ||
+     (resource.data.openVisitId is string && request.resource.data.openVisitId==null && visitAfter(g,resource.data.openVisitId).member==id && visitAfter(g,resource.data.openVisitId).exitedAt==request.time)
+    ))
+   ));allow delete:if admin();
+  }
+  match /datasets/{g}/payments/{id}{
+   allow read:if admin() || (staff() && current(g));
+   allow create:if admin() || (staff() && current(g) && request.resource.data.id==id && author(request.resource.data) && request.resource.data.amount is int && request.resource.data.method in ['Cash','Mobile Money','Bank transfer'] && request.resource.data.name is string && (
+    (request.resource.data.kind in ['Registration','Renewal'] && request.resource.data.member is string && memberAfter(g,request.resource.data.member).lastPaymentId==id && memberAfter(g,request.resource.data.member).expiresAt==request.resource.data.periodEndAt && request.resource.data.amount==(request.resource.data.kind=='Registration'?cfg(g).registration:cfg(g).monthly)) ||
+    (request.resource.data.kind=='Walk-in' && request.resource.data.member==null && request.resource.data.amount==cfg(g).walkin && visitAfter(g,request.resource.data.visitId).paymentId==id && visitAfter(g,request.resource.data.visitId).enteredAt==request.time)
+   ));allow update,delete:if admin();
+  }
+  match /datasets/{g}/attendance/{id}{
+   allow read:if admin() || (staff() && current(g));
+   allow create:if admin() || (staff() && current(g) && request.resource.data.id==id && request.resource.data.createdBy==request.auth.uid && request.resource.data.enteredAt==request.time && request.resource.data.exitedAt==null && (
+    (request.resource.data.type=='Member' && request.resource.data.member is string && member(g,request.resource.data.member).expiresAt>request.time && member(g,request.resource.data.member).openVisitId==null && memberAfter(g,request.resource.data.member).openVisitId==id) ||
+    (request.resource.data.type=='Walk-in' && request.resource.data.member==null && paymentAfter(g,request.resource.data.paymentId).kind=='Walk-in' && paymentAfter(g,request.resource.data.paymentId).visitId==id && paymentAfter(g,request.resource.data.paymentId).recordedAt==request.time)
+   ));
+   allow update:if admin() || (staff() && current(g) && resource.data.exitedAt==null && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['exited','exitedAt']) && request.resource.data.exitedAt==request.time && (resource.data.member==null || memberAfter(g,resource.data.member).openVisitId==null));allow delete:if admin();
+  }
+ }
+}
