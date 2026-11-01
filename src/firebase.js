@@ -17,11 +17,54 @@ function requireUser(){if(!auth.currentUser)throw Error('Please sign in.');retur
 async function operator(){const user=requireUser();const s=await getDocFromServer(doc(db,'users',user.uid));if(user.uid===OWNER_UID)return {uid:user.uid,email:user.email.toLowerCase(),name:s.data()?.name||user.displayName||'Administrator',role:'admin',active:true};if(!s.exists()||s.data().active!==true)throw Error('Your account has not been enabled by the admin.');return {...s.data(),uid:user.uid};}
 function readable(row){const r={...row};for(const [stored,display] of [['recordedAt','created'],['expiresAt','expires'],['enteredAt','entered'],['exitedAt','exited'],['periodEndAt','period_end']])if(r[stored]?.toDate){const event=display==='entered'||display==='created'?r.capturedAt:display==='exited'?r.exitCapturedAt:null;r[display]=(event?.toDate?event:r[stored]).toDate().toISOString();}for(const k of ['recordedAt','expiresAt','enteredAt','exitedAt','periodEndAt'])delete r[k];return r;}
 async function rows(g,t){return (await getDocsFromServer(collection(db,'datasets',g,t))).docs.map(d=>readable({...d.data(),id:t==='settings'?1:d.id}));}
-async function getOnlineData(attempt=0){const me=await operator(),s=await getDocFromServer(stateRef);if(!s.exists()){if(me.uid===OWNER_UID)return {setup:true,email:me.email};throw Error('The admin has not activated this gym yet.');}const state=s.data();const [members,payments,attendance,settings,audit]=await Promise.all(['members','payments','attendance','settings','audit'].map(t=>t==='audit'&&me.role!=='admin'?Promise.resolve([]):rows(state.active,t)));const end=(await getDocFromServer(stateRef)).data();if(end.revision!==state.revision||end.active!==state.active){if(attempt<2)return getOnlineData(attempt+1);throw Error('Records changed while loading. Please refresh.');}const staff=me.role==='admin'?(await getDocsFromServer(collection(db,'users'))).docs.map(d=>({...d.data(),uid:d.id})):[];return {me,email:me.email,datasetId:state.active,members,payments,attendance,settings,staff,audit:me.role==='admin'?audit.sort((a,b)=>b.created.localeCompare(a.created)).slice(0,100):[],allAudit:audit};}
+async function getOnlineData(attempt=0){const me=await operator(),s=await getDocFromServer(stateRef);if(!s.exists()){if(me.uid===OWNER_UID)return {setup:true,email:me.email};throw Error('The admin has not activated this gym yet.');}const state=s.data();const [members,payments,attendance,settings,audit]=await Promise.all(['members','payments','attendance','settings','audit'].map(t=>t==='audit'&&me.role!=='admin'?Promise.resolve([]):rows(state.active,t)));const end=(await getDocFromServer(stateRef)).data();if(end.revision!==state.revision||end.active!==state.active){if(attempt<2)return getOnlineData(attempt+1);throw Error('Records changed while loading. Please refresh.');}const staff=me.role==='admin'?(await getDocsFromServer(collection(db,'users'))).docs.map(d=>({...d.data(),uid:d.id})):[];return {me,email:me.email,datasetId:state.active,revision:state.revision,members,payments,attendance,settings,staff,audit:me.role==='admin'?audit.sort((a,b)=>b.created.localeCompare(a.created)).slice(0,100):[],allAudit:audit};}
 async function backup(safety=false){const me=await operator();if(me.role!=='admin')throw Error('Admin only.');if(safety){const state=(await getDocFromServer(stateRef)).data();if(!state.previous)throw Error('No recovery copy is available yet.');const data={};for(const t of ['members','payments','attendance','settings','audit'])data[t]=await rows(state.previous,t);data.staff=(await getDocsFromServer(collection(db,'users'))).docs.map(d=>({...d.data(),uid:d.id}));return {format:'raji-fitness-backup',version:1,createdAt:nowISO(),data};}const current=await getData();return {format:'raji-fitness-backup',version:1,createdAt:nowISO(),data:{members:current.members,payments:current.payments,attendance:current.attendance,settings:current.settings,staff:current.staff,audit:current.allAudit}};}
 async function sendOnline(b){
  const me=await operator(),user=requireUser();const id=b.operationId||crypto.randomUUID(),now=b.capturedAt||nowISO(),captured=timestamp(now),by=me.name+' ('+me.email+')';
  if(b.action==='backup')return backup(!!b.safety);
+ if(b.action==='correct'){
+  if(me.role!=='admin')throw Error('Admin only.');
+  if((await queueEntries(user.uid)).length)throw Error('Sync pending entries before correcting records.');
+  if(!['members','payments','attendance'].includes(b.table)||!text(b.target)||text(b.target).includes('/'))throw Error('Invalid record.');
+  const reason=text(b.reason,500);if(!reason)throw Error('Enter the reason for this correction.');
+  const state=(await getDocFromServer(stateRef)).data(),g=state.active;
+  if(b.dataset!==g||b.revision!==state.revision)throw Error('Records changed. Refresh and review this entry before saving.');
+  const ref=record(g,b.table,b.target),snapshot=await getDocFromServer(ref);if(!snapshot.exists())throw Error('Record no longer exists.');const old=snapshot.data();
+  let related=[];
+  if(b.remove&&b.table==='members')for(const table of ['payments','attendance']){const result=await getDocsFromServer(collection(db,'datasets',g,table));related.push(...result.docs.filter(d=>d.data().member===b.target).map(d=>({ref:d.ref,table,id:d.id})));}
+  if(b.remove&&b.table==='payments'&&old.visitId)related.push({ref:record(g,'attendance',old.visitId),table:'attendance',id:old.visitId});
+  if(b.remove&&b.table==='attendance'&&old.paymentId)related.push({ref:record(g,'payments',old.paymentId),table:'payments',id:old.paymentId});
+  if(related.length>400)throw Error('This client has too much history to delete at once. Correct the client details instead.');
+  await runTransaction(db,async tx=>{
+   const live=(await tx.get(stateRef)).data();if(live.active!==g||live.revision!==state.revision)throw Error('Records changed. Refresh and review before saving.');
+   const current=await tx.get(ref);if(!current.exists())throw Error('Record no longer exists.');
+   let memberRef=null,member=null;
+   if(b.table==='attendance'&&old.member){memberRef=record(g,'members',old.member);member=(await tx.get(memberRef)).data();if(!member)throw Error('Client no longer exists.');}
+   let changes={};
+   if(!b.remove){
+    if(b.table==='members'){
+     const name=text(b.name,100),phone=text(b.phone,30),expires=new Date(b.expires);if(!name||phone.replace(/\D/g,'').length<9||!Number.isFinite(expires.getTime()))throw Error('Enter a name, valid phone and membership expiry.');
+     const photo=text(b.photo,350000);if(photo&&!/^data:image\/(jpeg|png|webp);base64,/.test(photo))throw Error('Invalid client photo.');
+     changes={name,phone,photo,emergency:text(b.emergency,100),notes:text(b.notes,1000),expires:expires.toISOString(),expiresAt:Timestamp.fromDate(expires)};
+    }else if(b.table==='payments'){
+     const amount=Number(b.amount),created=new Date(b.created);if(!Number.isInteger(amount)||amount<1||amount>100000||!methods.includes(b.method)||!Number.isFinite(created.getTime())||created.getTime()>Date.now())throw Error('Enter a whole cedi amount, payment method and valid date.');
+     const name=text(b.name,100);if(!name)throw Error('Enter the client name.');
+     changes={name,amount,method:b.method,created:created.toISOString(),capturedAt:Timestamp.fromDate(created)};
+    }else{
+     const entered=new Date(b.entered),exited=b.exited?new Date(b.exited):null;if(!Number.isFinite(entered.getTime())||entered.getTime()>Date.now()||(exited&&(!Number.isFinite(exited.getTime())||exited<entered||exited.getTime()>Date.now())))throw Error('Check the arrival and departure times.');
+     if(member&&!exited&&member.openVisitId&&member.openVisitId!==old.id)throw Error('This client already has another open visit.');
+     changes={entered:entered.toISOString(),enteredAt:Timestamp.fromDate(entered),capturedAt:Timestamp.fromDate(entered),exited:exited?exited.toISOString():null,exitedAt:exited?Timestamp.fromDate(exited):null,exitCapturedAt:exited?Timestamp.fromDate(exited):null};
+    }
+   }
+   if(memberRef){if(b.remove||changes.exited){if(member.openVisitId===old.id)tx.update(memberRef,{openVisitId:null});}else tx.update(memberRef,{openVisitId:old.id});}
+   if(!b.remove&&b.table==='payments'&&old.visitId)tx.update(record(g,'attendance',old.visitId),{name:changes.name});
+   if(b.remove){tx.delete(ref);for(const item of related)tx.delete(item.ref);}else tx.update(ref,changes);
+   const before=readable(old);delete before.photo;
+   tx.set(record(g,'audit',id),{id,created:now,by,action:(b.remove?'Deleted ':'Edited ')+b.table+' entry for '+old.name+' — '+reason,reason,before,after:b.remove?null:readable({...old,...changes,photo:''}),relatedDeleted:related.map(r=>r.table+'/'+r.id),createdBy:user.uid,capturedAt:captured,recordedAt:serverTimestamp()});
+   tx.update(stateRef,{revision:live.revision+1});
+  });return {ok:true};
+ }
+
  if(b.action==='restore-preview'||b.action==='restore'){
   if(me.role!=='admin')throw Error('Admin only.');const data=validateBackup(b.backup),counts=Object.fromEntries(Object.entries(data).map(([k,v])=>[k,v.length]));
   if(b.action==='restore-preview')return {counts,createdAt:b.backup.createdAt};if(b.confirmation!=='RESTORE')throw Error('Type RESTORE to confirm.');
