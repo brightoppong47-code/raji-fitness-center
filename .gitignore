@@ -3,3 +3,4 @@ dist/
 .env*
 .firebase/
 *-debug.log
+.test-modules/
