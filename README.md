@@ -17,7 +17,7 @@ Firebase Authentication + Cloud Firestore gym management app, built with React/V
 3. In Firestore → Rules, paste the complete contents of `firestore.rules` and Publish.
 4. Firebase Authentication → Settings → Authorized domains: add `brightoppong47-code.github.io`.
 5. The owner account is identified by the UID in `src/config.js` and the matching UID in `firestore.rules`. Sign in using that Firebase account, then complete initial setup.
-6. For each staff member, create an account in Firebase Authentication. In the app’s Settings → Your team, enter that account’s User UID, name, email and role. Unapproved accounts cannot read gym records. Passwords are managed by Firebase, never stored in the repository or backups.
+6. In Settings → Staff & access → Create staff login, enter the staff name, email, password and role. Select New login to create the Firebase account or Existing login to link one using its current email and password. The UID is handled automatically. Use Edit access beside an existing staff member to update their name or role. Unapproved accounts cannot read gym records. Passwords are managed by Firebase, never stored in the repository or backups.
 
 The web Firebase configuration is public client configuration. Security is enforced by Firestore rules and Authentication, not by hiding the API key. Never commit service-account credentials or client/payment backups.
 
@@ -64,3 +64,5 @@ Republish the updated `firestore.rules` before deploying the offline update. Exi
 The service worker precaches the built app, gym imagery and the three pinned Firebase SDK modules. It never caches Firestore/API requests. Keep the first online session open until Settings → Offline & sync says files are ready. Browsers may evict local storage; download regular JSON backups while online. Synchronization runs while the app is open, using Web Locks where available to coordinate multiple tabs. The same queued operation ID is checked transactionally so retries cannot create a second payment.
 
 Tests: `npm run build && node tests/shell.mjs` validates the offline shell. The emulator integration suite also tests durable outbox storage using `fake-indexeddb@6`, delayed event dates, idempotency, fee conflicts, seven-day limits and reconnect sync.
+
+Staff provisioning uses a separate in-memory Firebase Auth instance, so the admin remains signed in. Passwords are passed only to Firebase Authentication and are never stored in Firestore, backups or the offline outbox. New accounts require a password of at least eight characters and must satisfy the Firebase project policy. Staff can use Forgot password on the login screen to reset their own password. Provisioning requires internet.

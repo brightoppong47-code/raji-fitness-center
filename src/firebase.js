@@ -1,5 +1,5 @@
-import {initializeApp} from 'https://www.gstatic.com/firebasejs/12.0.0/firebase-app.js';
-import {getAuth,onAuthStateChanged,signInWithEmailAndPassword,sendPasswordResetEmail,sendEmailVerification,signOut as firebaseSignOut} from 'https://www.gstatic.com/firebasejs/12.0.0/firebase-auth.js';
+import {initializeApp,deleteApp} from 'https://www.gstatic.com/firebasejs/12.0.0/firebase-app.js';
+import {getAuth,onAuthStateChanged,signInWithEmailAndPassword,sendPasswordResetEmail,sendEmailVerification,signOut as firebaseSignOut,createUserWithEmailAndPassword,setPersistence,inMemoryPersistence,deleteUser} from 'https://www.gstatic.com/firebasejs/12.0.0/firebase-auth.js';
 import {getFirestore,doc,collection,getDocFromServer,getDocsFromServer,runTransaction,writeBatch,Timestamp,serverTimestamp} from 'https://www.gstatic.com/firebasejs/12.0.0/firebase-firestore.js';
 import {firebaseConfig,OWNER_UID} from './config';
 import {validateBackup} from './backup';
@@ -88,3 +88,26 @@ let syncing;
 export async function syncPending(){if(!online()||!auth.currentUser)return;if(syncing)return syncing;const uid=auth.currentUser.uid;if(!(await queueEntries(uid)).length)return;const run=()=>flushQueue(uid,async b=>{if(auth.currentUser?.uid!==uid)throw Error('Sign in with the account that recorded these entries.');return sendOnline(b)});syncing=(typeof navigator!=='undefined'&&navigator.locks?navigator.locks.request('raji-sync-'+uid,run):run()).finally(()=>{syncing=null;notify()});return syncing;}
 export async function signOut(){const uid=auth.currentUser?.uid;if(uid&&(await queueEntries(uid)).length)throw Error('Sync or export and remove pending entries before signing out.');if(uid)await clearCache(uid);return firebaseSignOut(auth);}
 export {queueEntries};
+
+export async function createStaffLogin(payload){
+ if(!online())throw Error('Connect to the internet to create staff logins.');
+ const me=await operator();if(me.role!=='admin')throw Error('Admin only.');
+ const name=text(payload.name,100),email=text(payload.email).toLowerCase(),role=payload.role,password=payload.password;
+ if(!name||!/^\S+@\S+\.\S+$/.test(email)||!['admin','secretary'].includes(role))throw Error('Enter the staff name, valid email and role.');
+ if(typeof password!=='string'||password.length<(payload.accountMode==='existing'?6:8)||password.length>128)throw Error(payload.accountMode==='existing'?'Enter the existing account password (at least 6 characters).':'Use a password between 8 and 128 characters.');
+ const secondary=initializeApp(firebaseConfig,'raji-staff-'+crypto.randomUUID()),staffAuth=getAuth(secondary);
+ let created=null;
+ try{
+  await setPersistence(staffAuth,inMemoryPersistence);
+  const credential=payload.accountMode==='existing'?await signInWithEmailAndPassword(staffAuth,email,password):await createUserWithEmailAndPassword(staffAuth,email,password);
+  if(payload.accountMode!=='existing')created=credential.user;
+  await sendOnline({action:'staff',uid:credential.user.uid,name,email,role});
+  return {ok:true,staffCreated:true};
+ }catch(e){
+  if(created){try{const saved=await getDocFromServer(doc(db,'users',created.uid));if(saved.exists()&&saved.data().role===role&&saved.data().email===email)return {ok:true,staffCreated:true};}catch{}try{await deleteUser(created)}catch{throw Error('The login was created, but access could not be saved. Reconnect and choose Existing login with the same email and password to finish setup.');}}
+  const messages={'auth/email-already-in-use':'This email already has a login. Select Existing login and enter its current password to link it automatically.','auth/invalid-credential':'The existing email or password is incorrect. The staff member can use Forgot password on the login page.','auth/weak-password':'Firebase rejected this password. Choose a stronger one that meets your project’s password policy.','auth/invalid-password':'Choose a stronger password that meets your Firebase password policy.','auth/password-does-not-meet-requirements':'Choose a stronger password that meets your Firebase password policy.','auth/invalid-email':'Enter a valid staff email address.','auth/operation-not-allowed':'Enable Email/Password in Firebase Authentication first.','auth/network-request-failed':'Connection interrupted. Reconnect and try again.','auth/too-many-requests':'Too many attempts. Please wait and try again.'};
+  throw Error(messages[e.code]||e.message||'Staff login could not be created.');
+ }finally{
+  try{await firebaseSignOut(staffAuth)}catch{}try{await deleteApp(secondary)}catch{}
+ }
+}
