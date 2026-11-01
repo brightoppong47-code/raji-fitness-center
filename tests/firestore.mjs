@@ -1,0 +1,25 @@
+// Runs the actual Firebase adapter against Firestore emulator security rules.
+// Install firebase@12.0.0 and @firebase/rules-unit-testing@5 separately, or set RAJI_TEST_DEPS to that package.json.
+import {createRequire} from 'node:module';import fs from 'node:fs';import assert from 'node:assert/strict';
+const require=createRequire(process.env.RAJI_TEST_DEPS||new URL('../package.json',import.meta.url));
+const {initializeTestEnvironment,assertFails,assertSucceeds}=require('@firebase/rules-unit-testing');const sdk=require('firebase/firestore');
+const owner='n4f2LxOy8zd49tss1RUnu7hRfLs1';
+const env=await initializeTestEnvironment({projectId:'demo-raji-fitness',firestore:{host:'127.0.0.1',port:8092,rules:fs.readFileSync('firestore.rules','utf8')}});
+async function adapter(uid){let src=fs.readFileSync('src/firebase.js','utf8');src=src.replace(/^import .*;\n/gm,'');const validator=fs.readFileSync('src/backup.js','utf8').replace('export function validateBackup','function validateBackup');
+const mockAuth={currentUser:{uid,email:uid+'@example.test'}};globalThis.__testSdk={...sdk,initializeApp:()=>({}),getAuth:()=>mockAuth,getFirestore:()=>env.authenticatedContext(uid).firestore(),onAuthStateChanged:()=>{},signInWithEmailAndPassword:()=>{},sendPasswordResetEmail:()=>{},sendEmailVerification:()=>{},signOut:()=>{}};
+const names=['initializeApp','getAuth','getFirestore','onAuthStateChanged','signInWithEmailAndPassword','sendPasswordResetEmail','sendEmailVerification','signOut','doc','collection','getDocFromServer','getDocsFromServer','runTransaction','writeBatch','Timestamp','serverTimestamp'];src='const {'+names.join(',')+'}=globalThis.__testSdk;const OWNER_UID='+JSON.stringify(owner)+';const firebaseConfig={};\n'+validator+'\n'+src+'\n//'+uid;return import('data:text/javascript;base64,'+Buffer.from(src).toString('base64'));}
+try{
+ const admin=await adapter(owner);assert.equal((await admin.getData()).setup,true);await admin.api({action:'setup',name:'RAJI Admin'});
+ await admin.api({action:'staff',uid:'secretary',email:'secretary@example.test',name:'Secretary',role:'secretary'});const secretary=await adapter('secretary');
+ await secretary.api({action:'register',name:'Test Member',phone:'0240000000',method:'Cash'});let data=await admin.getData();const m=data.members[0];assert.equal(data.payments[0].amount,400);assert.ok(m.expires);assert.equal(data.settings[0].id,1);
+ await secretary.api({action:'renew',member:m.id,method:'Mobile Money'});data=await admin.getData();assert.equal(data.payments.reduce((s,p)=>s+p.amount,0),550);
+ await secretary.api({action:'checkin',member:m.id});await assert.rejects(secretary.api({action:'checkin',member:m.id}));const visit=(await admin.getData()).attendance[0];await secretary.api({action:'checkout',visit:visit.id});await assert.rejects(secretary.api({action:'checkout',visit:visit.id}));
+ await secretary.api({action:'walkin',name:'Walk-in test',method:'Cash'});assert.equal((await admin.getData()).payments.reduce((s,p)=>s+p.amount,0),560);
+ const secDb=env.authenticatedContext('secretary').firestore();const active='live';await assertFails(sdk.setDoc(sdk.doc(secDb,'datasets',active,'settings','1'),{registration:1,monthly:1,walkin:1,id:1}));await assertFails(sdk.updateDoc(sdk.doc(secDb,'users','secretary'),{role:'admin'}));await assertFails(sdk.deleteDoc(sdk.doc(secDb,'datasets',active,'payments',data.payments[0].id)));
+ await assertFails(sdk.setDoc(sdk.doc(secDb,'datasets',active,'payments','fake'),{id:'fake',name:'Fake',member:null,kind:'Walk-in',amount:1,method:'Cash',createdBy:'secretary',recordedAt:sdk.serverTimestamp(),visitId:'fake-visit'}));
+ await assertFails(sdk.getDocs(sdk.collection(env.unauthenticatedContext().firestore(),'datasets',active,'members')));await assertFails(sdk.getDocs(sdk.collection(env.authenticatedContext('unknown').firestore(),'datasets',active,'members')));
+ const original=await admin.api({action:'backup'});await secretary.api({action:'walkin',name:'After backup',method:'Cash'});await assert.rejects(secretary.api({action:'backup'}));await assert.rejects(secretary.api({action:'restore',backup:original,confirmation:'RESTORE'}));
+ await admin.api({action:'restore-preview',backup:original});await assert.rejects(admin.api({action:'restore',backup:original,confirmation:''}));await admin.api({action:'restore',backup:original,confirmation:'RESTORE'});data=await admin.getData();assert.equal(data.payments.length,original.data.payments.length);const recovery=await admin.api({action:'backup',safety:true});assert.equal(recovery.data.payments.length,original.data.payments.length+1);assert.equal((await secretary.getData()).me.role,'secretary');
+ await admin.api({action:'restore',backup:recovery,confirmation:'RESTORE'});assert.equal((await admin.getData()).payments.length,recovery.data.payments.length);
+ console.log('PASS: Firebase adapter and rules: setup, staff access, registration, renewal, walk-ins, attendance, duplicate prevention, anonymous/unknown denial, fee/role/payment tamper denial, backup/restore and recovery.');
+}catch(e){console.error('TEST FAILURE:',e.message);process.exitCode=1}finally{await env.cleanup()}

@@ -1,1 +1,58 @@
-# raji-fitness-center
+# RAJI FITNESS CENTER
+
+Firebase Authentication + Cloud Firestore gym management app, built with React/Vite for GitHub Pages.
+
+## Business rules
+
+- Registration: GH₵400, including 30 days of access.
+- Renewal: GH₵150 for another 30 days, starting from expiry if still active, otherwise from the renewal date.
+- Walk-in: GH₵10; recording payment also checks the visitor in.
+- Expired members must renew before check-in. A member can have only one open visit.
+- Secretaries may register clients, record payments and check attendance. Admins also manage fees, staff and backup/restore.
+
+## Firebase setup (required before use)
+
+1. Project: `raji-fitness-center`; Email/Password Authentication enabled.
+2. Firestore: Standard edition, `(default)` database, production rules.
+3. In Firestore → Rules, paste the complete contents of `firestore.rules` and Publish.
+4. Firebase Authentication → Settings → Authorized domains: add `brightoppong47-code.github.io`.
+5. The owner account is identified by the UID in `src/config.js` and the matching UID in `firestore.rules`. Sign in using that Firebase account, then complete initial setup.
+6. For each staff member, create an account in Firebase Authentication. In the app’s Settings → Your team, enter that account’s User UID, name, email and role. Unapproved accounts cannot read gym records. Passwords are managed by Firebase, never stored in the repository or backups.
+
+The web Firebase configuration is public client configuration. Security is enforced by Firestore rules and Authentication, not by hiding the API key. Never commit service-account credentials or client/payment backups.
+
+## GitHub Pages
+
+Settings → Pages → Source: **GitHub Actions**. Merge the migration branch to `main`; the included Actions workflow builds and deploys `dist/`. The Vite base is `/raji-fitness-center/`.
+
+Expected URL after a successful Pages deployment: `https://brightoppong47-code.github.io/raji-fitness-center/`.
+
+The current Sites-hosted app is independent and is not changed by this migration.
+
+## Data migration and backups
+
+1. Download a backup from the old app.
+2. In the Firebase app, sign in as the configured owner and activate the workspace.
+3. Settings → Backup & restore → choose the JSON file, review counts and type RESTORE.
+
+Restores validate records, import into a new dataset, and switch the active dataset only after all writes complete. A concurrent new payment causes the switch to be rejected so it is not lost. The previous dataset is retained as a recovery copy. Failed import datasets may remain inactive; only admins can read them. Current Firebase staff access is preserved during restores; staff details from old backups do not automatically create Firebase login accounts. Device themes/photo settings stay on the device. Backups do not contain Firebase passwords.
+
+## Development
+
+Node 22.13+:
+
+```sh
+npm install
+npm run dev
+npm run build
+```
+
+The Firebase modular web SDK is pinned to 12.0.0 and loaded from Google’s official CDN. Internet access to Firebase/Google endpoints is required. The app refreshes records every 30 seconds and immediately after saves. Payments/attendance use Firestore transactions, and secretaries cannot rewrite or delete payment history under the provided rules.
+
+## Limits
+
+JSON restores are limited to 20 MB. Client photos are limited to 250 KB. This is an online app: writes require a working connection. JSON exports cover app records, not Firebase Authentication passwords or provider configuration. High Contrast intentionally hides the page watermark. Theme/visibility choices are device preferences.
+
+## Validation
+
+The actual Firebase adapter was exercised against the Firestore emulator with the supplied security rules. Tests cover owner setup, secretary workflows, unauthorized access, direct fee/role/payment tampering, backup validation, restore and recovery. The test harness is in `tests/firestore.mjs`. It requires Firebase SDK 12.0.0, rules-unit-testing 5.0.0 and a compatible Firebase CLI/Java installation; `RAJI_TEST_DEPS` can point to an external test package.json. `emulator.test.json` uses only the demo project, never production.
